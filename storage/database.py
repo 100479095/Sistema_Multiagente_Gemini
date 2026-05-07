@@ -18,6 +18,9 @@ class ExperimentDB:
                 threat_class       TEXT,
                 guardrails_enabled INTEGER,
                 max_iterations     INTEGER,
+                mode               TEXT,
+                victim_model       TEXT,
+                wrap_strategy      TEXT,
                 started_at         TEXT,
                 finished_at        TEXT,
                 summary            TEXT
@@ -36,6 +39,9 @@ class ExperimentDB:
                 home_state          TEXT,
                 exfiltrated_urls    TEXT,
                 elapsed_seconds     REAL,
+                wrap_strategy       TEXT,
+                wrap_fact_id        TEXT,
+                payload_injected    TEXT,
                 created_at          TEXT
             );
             """
@@ -43,16 +49,26 @@ class ExperimentDB:
         self.conn.commit()
 
     def start_experiment(
-        self, threat_class: str, guardrails_enabled: bool, max_iterations: int
+        self,
+        threat_class: str,
+        guardrails_enabled: bool,
+        max_iterations: int,
+        mode: str = "adaptive",
+        victim_model: str | None = None,
+        wrap_strategy: str = "none",
     ) -> int:
         cur = self.conn.execute(
             """INSERT INTO experiments
-               (threat_class, guardrails_enabled, max_iterations, started_at)
-               VALUES (?, ?, ?, ?)""",
+               (threat_class, guardrails_enabled, max_iterations,
+                mode, victim_model, wrap_strategy, started_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 threat_class,
                 int(guardrails_enabled),
                 max_iterations,
+                mode,
+                victim_model,
+                wrap_strategy,
                 datetime.now().isoformat(),
             ),
         )
@@ -64,8 +80,9 @@ class ExperimentDB:
             """INSERT INTO iterations
                (experiment_id, iteration, prompt, response, success, confidence,
                 evidence, guardrail_triggered, home_state, exfiltrated_urls,
-                elapsed_seconds, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                elapsed_seconds, wrap_strategy, wrap_fact_id, payload_injected,
+                created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 exp_id,
                 data["iteration"],
@@ -78,6 +95,9 @@ class ExperimentDB:
                 json.dumps(data["home_state"]),
                 json.dumps(data["exfiltrated_urls"]),
                 data["elapsed_seconds"],
+                data.get("wrap_strategy"),
+                data.get("wrap_fact_id"),
+                data.get("payload_injected"),
                 datetime.now().isoformat(),
             ),
         )
@@ -92,19 +112,27 @@ class ExperimentDB:
 
     def get_all_results(self) -> list[dict]:
         rows = self.conn.execute(
-            """SELECT e.threat_class, e.guardrails_enabled,
+            """SELECT e.threat_class, e.guardrails_enabled, e.mode,
+                      e.victim_model, e.wrap_strategy,
                       i.iteration, i.success, i.confidence,
-                      i.guardrail_triggered, i.elapsed_seconds
+                      i.guardrail_triggered, i.elapsed_seconds,
+                      i.wrap_strategy AS iter_wrap_strategy,
+                      i.wrap_fact_id
                FROM iterations i JOIN experiments e ON i.experiment_id = e.id"""
         ).fetchall()
         cols = [
             "threat_class",
             "guardrails",
+            "mode",
+            "victim_model",
+            "wrap_strategy",
             "iteration",
             "success",
             "confidence",
             "guardrail_triggered",
             "elapsed",
+            "iter_wrap_strategy",
+            "wrap_fact_id",
         ]
         return [dict(zip(cols, r)) for r in rows]
 
