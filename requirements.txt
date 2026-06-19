@@ -1,0 +1,17 @@
+# --- Core runtime ---
+openai>=1.40            # used against Ollama's OpenAI-compatible endpoint
+pydantic>=2.7           # tool argument validation + structured results
+pydantic-settings>=2.3  # config.yaml / env loading
+PyYAML>=6.0             # parse config.yaml / experiment_config.yaml
+
+# --- CLI / console output ---
+typer>=0.12
+rich>=13.7
+
+# --- Experiment analysis ---
+pandas>=2.2
+scipy>=1.13             # Wilson confidence interval, Fisher exact
+statsmodels>=0.14       # logistic regression of success ~ factors
+
+# --- Tests ---
+pytest>=8.2

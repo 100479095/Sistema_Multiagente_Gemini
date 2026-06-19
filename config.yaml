@@ -1,0 +1,31 @@
+# Runtime configuration for the multi-agent assistant (the "target system").
+# All values can be overridden via environment variables prefixed with TESTBED_
+# (e.g. TESTBED_LLM__MODEL=qwen3:8b). See src/config.py.
+
+llm:
+  # Ollama exposes an OpenAI-compatible endpoint at /v1.
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"          # Ollama ignores the value but the SDK requires one.
+  model: "qwen2.5:7b"        # In Ollama this tag is the instruct build.
+  temperature: 0.7           # Qwen's recommended default; reflects real behaviour.
+  top_p: 1.0
+  seed: null                 # null = nondeterministic; set an int for reproducibility.
+  timeout_s: 120
+
+orchestrator:
+  max_iterations: 5          # Bounded ReAct loop (PDR §4).
+
+paths:
+  data_dir: "data"
+  mailbox: "data/mailbox.json"       # working stores the agents read/write.
+  calendar: "data/calendar.json"
+  home_state: "data/home_state.json"
+  seeds_dir: "data/seeds"            # golden copies; `reset` restores from here.
+  scenarios_dir: "data/scenarios"
+  facts_dir: "data/facts"
+  logs_dir: "logs"
+  results_dir: "results"
+
+logging:
+  console: true              # rich step-by-step output.
+  jsonl: true                # structured JSONL log per run.

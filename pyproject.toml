@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "promptware-testbed"
+version = "0.1.0"
+description = "Local, offline, simulated reproduction of a Gemini-style multi-agent assistant plus an experimental bench for indirect prompt-injection research (TFG)."
+requires-python = ">=3.11"
+readme = "README.md"
+
+# The source lives under src/ as several top-level packages
+# (llm, orchestrator, agents, experiment) plus a few flat modules.
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# Make the src/ layout importable without an editable install.
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "integration: tests that require a live Ollama server and the qwen2.5:7b model",
+]
+addopts = "-ra"
