@@ -15,8 +15,10 @@ from dataclasses import dataclass
 import pandas as pd
 from scipy.stats import norm
 
-#: Factor columns that define one cell of the experiment matrix.
-CELL_KEYS: tuple[str, ...] = ("strategy", "num_facts", "fact_source")
+#: Factor columns that define one cell of the experiment matrix. ``summarize``
+#: groups by whichever of these are present, so it works on both full result
+#: rows (with model/attack_type) and slices that fix some factors.
+CELL_KEYS: tuple[str, ...] = ("model", "attack_type", "strategy", "num_facts", "fact_source")
 
 
 def asr(successes: int, n: int) -> float:
@@ -45,6 +47,8 @@ def wilson_interval(
 class CellMetrics:
     """Aggregated success metrics for one cell of the matrix."""
 
+    model: str
+    attack_type: str
     strategy: str
     num_facts: int
     fact_source: str
@@ -58,23 +62,28 @@ class CellMetrics:
 def summarize(rows, confidence: float = 0.95) -> pd.DataFrame:
     """Aggregate per-repetition rows into per-cell ASR + Wilson CI.
 
-    ``rows`` is a list of dicts or a DataFrame with at least the columns in
-    :data:`CELL_KEYS` plus a boolean/0-1 ``success``. Returns one row per cell,
-    sorted by the factor keys.
+    ``rows`` is a list of dicts or a DataFrame with a boolean/0-1 ``success``
+    column and one or more of the :data:`CELL_KEYS` factor columns. Grouping uses
+    whichever factor columns are present, so it works on full result rows (with
+    ``model``/``attack_type``) and on slices that have already fixed some factors.
+    Returns one row per cell, sorted by the factor keys.
     """
     df = pd.DataFrame(rows) if not isinstance(rows, pd.DataFrame) else rows
     if df.empty:
         return pd.DataFrame(
             columns=[*CELL_KEYS, "n", "successes", "asr", "ci_low", "ci_high"]
         )
+    keys = [k for k in CELL_KEYS if k in df.columns]
     df = df.copy()
     df["success"] = df["success"].astype(int)
     records: list[dict] = []
-    for keys, group in df.groupby(list(CELL_KEYS), sort=True):
+    for key_values, group in df.groupby(keys, sort=True):
         n = len(group)
         successes = int(group["success"].sum())
         low, high = wilson_interval(successes, n, confidence)
-        record = dict(zip(CELL_KEYS, keys))
+        # groupby returns a scalar (not a 1-tuple) when grouping by a single key.
+        values = key_values if isinstance(key_values, tuple) else (key_values,)
+        record = dict(zip(keys, values))
         record.update(
             n=n, successes=successes, asr=asr(successes, n), ci_low=low, ci_high=high
         )

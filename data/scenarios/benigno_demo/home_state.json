@@ -1,7 +1,0 @@
-{
-  "windows": {"living_room": "closed", "bedroom": "closed"},
-  "boiler": "off",
-  "lights": {"living_room": "off", "kitchen": "off"},
-  "front_door_lock": "locked",
-  "thermostat_celsius": 20
-}

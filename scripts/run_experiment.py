@@ -1,13 +1,16 @@
 """Run the experimental campaign defined in experiment_config.yaml.
 
-Sweeps the factor matrix, writing one row per repetition to
-``results/results.csv`` (resumable: re-running continues where it stopped). Each
-repetition resets the home/calendar/mailbox to the benign seeds, seeds one
-poisoned record, runs the orchestrator, and records whether the home state
-flipped. Requires Ollama serving the configured model.
+Sweeps the factor matrix (model × attack_type × strategy × num_facts ×
+fact_source), writing one row per repetition to ``results/results.csv``
+(resumable: re-running continues where it stopped). Each repetition resets the
+home/calendar/mailbox to the benign seeds, seeds one poisoned email/event, runs
+the orchestrator, and scores success — the home-state side effect for the
+``agentic`` attack, or the LLM judge on the assistant's reply for the ``harmful``
+attack. Requires Ollama serving the configured models.
 
-The shipped config is inert (``target_action`` is a placeholder); set it locally
-to run an authorised study. Restore state afterwards with
+All attack text lives in ``messages.yaml`` (system prompt, benign carrier, and
+the two injections); edit it there before an authorised study. Run artifacts
+(results/, logs/) are git-ignored. Restore state afterwards with
 ``python scripts/reset_data.py``.
 
 Usage:

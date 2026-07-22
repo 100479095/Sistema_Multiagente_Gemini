@@ -4,8 +4,7 @@ pydantic>=2.7           # tool argument validation + structured results
 pydantic-settings>=2.3  # config.yaml / env loading
 PyYAML>=6.0             # parse config.yaml / experiment_config.yaml
 
-# --- CLI / console output ---
-typer>=0.12
+# --- Console output ---
 rich>=13.7
 
 # --- Experiment analysis ---

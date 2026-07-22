@@ -8,11 +8,11 @@ model does not know. Three arrangements (PDR §7.4):
 * **S3** — ``ceil(N/2)`` facts, the instruction, then ``floor(N/2)`` facts
   (the instruction is buried in the middle).
 
-This module only *arranges* text. The concrete instruction wording is never
-shipped: the template carries the ``<<TARGET_ACTION>>`` placeholder, and the
-researcher supplies the target-action phrase at runtime (PDR §15). With no facts
-all three strategies collapse to the instruction alone — which is why the runner
-computes the baseline once and reuses it.
+This module only *arranges* text. The concrete instruction wording lives in the
+central ``messages.yaml`` (:mod:`messages`), one injection per attack type; the
+runner passes it in as ``instruction``. With no facts all three strategies
+collapse to the instruction alone — which is why the runner computes the baseline
+once and reuses it.
 """
 
 from __future__ import annotations
@@ -20,15 +20,7 @@ from __future__ import annotations
 import math
 from typing import Sequence
 
-#: Placeholder the researcher replaces with the concrete target-action phrase.
-TARGET_ACTION_PLACEHOLDER = "<<TARGET_ACTION>>"
-
 STRATEGIES: tuple[str, ...] = ("S1", "S2", "S3")
-
-
-def render_instruction(template: str, target_action: str) -> str:
-    """Substitute the target-action phrase into the instruction template."""
-    return template.replace(TARGET_ACTION_PLACEHOLDER, target_action)
 
 
 def _join(parts: Sequence[str]) -> str:

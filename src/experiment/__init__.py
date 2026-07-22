@@ -1,1 +1,1 @@
-"""Experimental bench: corpus, pre-probe, payload builder, runner and metrics."""
+"""Experimental bench: corpus, payload builder, runner and metrics."""

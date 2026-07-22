@@ -10,10 +10,10 @@ llm:
   temperature: 0.7           # Qwen's recommended default; reflects real behaviour.
   top_p: 1.0
   seed: null                 # null = nondeterministic; set an int for reproducibility.
-  timeout_s: 120
+  timeout_s: 600  
 
 orchestrator:
-  max_iterations: 5          # Bounded ReAct loop (PDR §4).
+  max_iterations: 10          # Bounded ReAct loop (PDR §4).
 
 paths:
   data_dir: "data"
@@ -21,7 +21,6 @@ paths:
   calendar: "data/calendar.json"
   home_state: "data/home_state.json"
   seeds_dir: "data/seeds"            # golden copies; `reset` restores from here.
-  scenarios_dir: "data/scenarios"
   facts_dir: "data/facts"
   logs_dir: "logs"
   results_dir: "results"

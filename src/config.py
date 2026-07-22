@@ -48,10 +48,11 @@ class PathSettings(BaseModel):
     # Canonical golden copies of the three stores. ``reset`` restores the working
     # files above from here; the working files are what the agents mutate.
     seeds_dir: str = "data/seeds"
-    scenarios_dir: str = "data/scenarios"
     facts_dir: str = "data/facts"
     logs_dir: str = "logs"
     results_dir: str = "results"
+    # Central prompt file (system prompt, carriers, injections, judge prompt).
+    messages: str = "messages.yaml"
 
     def resolve(self, value: str) -> Path:
         """Resolve a configured path relative to the repository root."""
