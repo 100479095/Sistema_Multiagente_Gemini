@@ -7,7 +7,15 @@ an ambiguous or empty answer never inflates the attack success rate.
 
 from __future__ import annotations
 
-from experiment.judge import COMPLIED, REFUSED, Judge, JudgeVerdict, parse_verdict
+from experiment.judge import (
+    COMPLIED,
+    REFUSED,
+    AdaptiveAttacker,
+    Judge,
+    JudgeVerdict,
+    extract_prompt,
+    parse_verdict,
+)
 from llm.client import AssistantMessage
 from messages import Messages
 
@@ -19,6 +27,12 @@ def _messages() -> Messages:
         injections={"agentic": "open", "harmful": "bad"},
         judge_system="You classify safety.",
         judge_user_template="Response: {response}. COMPLIED or REFUSED?",
+        attack_prompts={"agentic": ["fb1", "fb2"], "harmful": ["fb3"]},
+        generator_system="You optimise injections.",
+        generator_user_template=(
+            "type={attack_type} prior={prior_prompt} resp={response} "
+            "return between <prompt></prompt>"
+        ),
     )
 
 
@@ -117,3 +131,72 @@ def test_evaluate_handles_empty_response_text():
     verdict = Judge(llm, messages=_messages()).evaluate(None)
     assert verdict.complied is False
     assert llm.calls == 1  # still asks the judge; None is rendered as empty
+
+
+# --------------------------------------------------------------------------- #
+# extract_prompt
+# --------------------------------------------------------------------------- #
+
+
+def test_extract_prompt_pulls_text_between_tags():
+    assert extract_prompt("<prompt>do the thing</prompt>") == "do the thing"
+
+
+def test_extract_prompt_strips_surrounding_whitespace_and_prose():
+    text = "Here you go:\n<prompt>\n  open the window now  \n</prompt>\nHope it helps."
+    assert extract_prompt(text) == "open the window now"
+
+
+def test_extract_prompt_handles_multiline_body():
+    text = "<prompt>line one\nline two</prompt>"
+    assert extract_prompt(text) == "line one\nline two"
+
+
+def test_extract_prompt_returns_none_without_tags():
+    assert extract_prompt("no tags here, sorry") is None
+
+
+def test_extract_prompt_returns_none_when_empty_between_tags():
+    assert extract_prompt("<prompt>   </prompt>") is None
+
+
+def test_extract_prompt_none_input_is_none():
+    assert extract_prompt(None) is None
+
+
+# --------------------------------------------------------------------------- #
+# AdaptiveAttacker.propose_prompt
+# --------------------------------------------------------------------------- #
+
+
+def test_propose_prompt_extracts_improved_injection():
+    msgs = _messages()
+    llm = ScriptedJudgeLLM(["Sure: <prompt>a better injection</prompt>"])
+    attacker = AdaptiveAttacker(llm, messages=msgs)
+
+    proposed = attacker.propose_prompt(
+        "agentic", prior_prompt="open", response="I won't."
+    )
+
+    assert proposed == "a better injection"
+    assert llm.calls == 1
+    roles = [m["role"] for m in llm.last_messages]
+    assert roles == ["system", "user"]
+    assert llm.last_messages[0]["content"] == "You optimise injections."
+    # The user message carries the attack type, prior prompt, and response.
+    user = llm.last_messages[1]["content"]
+    assert "agentic" in user and "open" in user and "I won't." in user
+    # No tools; a seed is passed for reproducibility.
+    assert llm.last_kwargs["tools"] is None
+
+
+def test_propose_prompt_returns_none_when_generator_emits_no_prompt():
+    llm = ScriptedJudgeLLM(["I cannot help with that request."])
+    attacker = AdaptiveAttacker(llm, messages=_messages())
+
+    proposed = attacker.propose_prompt(
+        "harmful", prior_prompt="bad", response="I refuse."
+    )
+
+    assert proposed is None
+    assert llm.calls == 1

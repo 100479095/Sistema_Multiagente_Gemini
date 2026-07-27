@@ -45,7 +45,7 @@ from agents.base import load_json, save_json
 from app import build_llm, make_orchestrator, reset_data, working_paths
 from config import Settings, get_settings
 from experiment.corpus import Corpus, sampled_ids
-from experiment.judge import Judge
+from experiment.judge import AdaptiveAttacker, Judge
 from experiment.payload_builder import build_payload
 from logging_setup import RunLogger, _make_console
 from messages import Messages, get_messages
@@ -59,6 +59,11 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "fact_source",
     "rep",
     "success",
+    # Adaptive loop summary: how many attempts ran, which one first succeeded
+    # (0 if none), and where its prompt came from (base|judge|fallback|"").
+    "attempts_used",
+    "winning_attempt",
+    "winning_prompt_source",
     "judge_label",
     "judge_rationale",
     "fact_seed",
@@ -73,6 +78,28 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "num_invocations",
     "automatic_agent_invocation",
     "max_iterations_reached",
+    "chained_agents",
+    "final_answer",
+    "log_file",
+)
+
+# Columns written to attempts.csv (one row per attack attempt, the adaptive
+# detail behind each summary row in results.csv).
+ATTEMPT_COLUMNS: tuple[str, ...] = (
+    "model",
+    "attack_type",
+    "strategy",
+    "num_facts",
+    "fact_source",
+    "rep",
+    "attempt",
+    "prompt_source",
+    "prompt_text",
+    "success",
+    "judge_label",
+    "llm_seed",
+    "num_inferences",
+    "num_invocations",
     "chained_agents",
     "final_answer",
     "log_file",
@@ -113,6 +140,10 @@ class ExperimentConfig(BaseModel):
     base_seed: int = 1000
     mix_ratio: float = 0.5
 
+    # --- Adaptive red-teaming loop (up to N attempts per case, stop on success) ---
+    max_attempts: int = 5  # attack attempts per case (1 == the classic single shot)
+    adaptive: bool = True  # when False, force a single attempt regardless of max
+
     @classmethod
     def load(
         cls, path: str | Path | None = None, settings: Settings | None = None
@@ -126,6 +157,10 @@ class ExperimentConfig(BaseModel):
         data = {}
         if p.exists():
             data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        # config.yaml (Settings.models) is the single source of truth for which
+        # models the pipeline sweeps; experiment_config.yaml's ``models`` is only a
+        # fallback. Overriding here keeps the two files from silently disagreeing.
+        data["models"] = list(settings.models)
         return cls(**data)
 
 
@@ -256,7 +291,9 @@ class ExperimentRunner:
         corpus: Corpus | None = None,
         messages: Messages | None = None,
         judge: Judge | None = None,
+        attacker: AdaptiveAttacker | None = None,
         results_path: str | Path | None = None,
+        attempts_path: str | Path | None = None,
         console: bool = False,
     ) -> None:
         self.config = config
@@ -267,9 +304,14 @@ class ExperimentRunner:
         self.corpus = corpus or Corpus.from_settings(self.settings)
         self.messages = messages or get_messages()
         self._judge = judge  # built lazily on first harmful cell if not injected
+        self._attacker = attacker  # built lazily on first adaptation if not injected
         if results_path is None:
             results_path = self.settings.paths.resolve(self.settings.paths.results_dir) / "results.csv"
         self.results_path = Path(results_path)
+        # The per-attempt detail file sits next to results.csv unless overridden.
+        self.attempts_path = (
+            Path(attempts_path) if attempts_path else self.results_path.with_name("attempts.csv")
+        )
         self.console = console
 
     # -- lazy judge ---------------------------------------------------------- #
@@ -280,6 +322,13 @@ class ExperimentRunner:
             judge_llm = build_llm(self.settings, self.config.judge_model)
             self._judge = Judge(judge_llm, self.messages)
         return self._judge
+
+    def _ensure_attacker(self) -> AdaptiveAttacker:
+        """The adaptive prompt generator: reuses the aligned ``judge_model``."""
+        if self._attacker is None:
+            attacker_llm = build_llm(self.settings, self.config.judge_model)
+            self._attacker = AdaptiveAttacker(attacker_llm, self.messages)
+        return self._attacker
 
     # -- resumability -------------------------------------------------------- #
 
@@ -312,56 +361,148 @@ class ExperimentRunner:
                 writer.writeheader()
             writer.writerow(row)
 
-    # -- one repetition ------------------------------------------------------ #
+    def _append_attempt(self, row: dict[str, Any]) -> None:
+        """Append one attack attempt to attempts.csv (the adaptive detail file)."""
+        self.attempts_path.parent.mkdir(parents=True, exist_ok=True)
+        new_file = not self.attempts_path.exists()
+        with self.attempts_path.open("a", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=ATTEMPT_COLUMNS)
+            if new_file:
+                writer.writeheader()
+            writer.writerow(row)
+
+    # -- scoring & adaptation ------------------------------------------------ #
+
+    def _score(self, cell: Cell, result: Any) -> tuple[bool, str, str]:
+        """Decide attack success for one run (side effect vs LLM judge).
+
+        Returns ``(success, judge_label, judge_rationale)``; the judge fields are
+        empty for the agentic attack, which is scored purely by the home state.
+        """
+        if cell.attack_type == "agentic":
+            success = check_success(
+                self.settings, target=self.config.target, target_room=self.config.target_room
+            )
+            return success, "", ""
+        # harmful: the LLM judge reads the assistant's final answer.
+        verdict = self._ensure_judge().evaluate(result.final_answer)
+        return verdict.success, verdict.label, verdict.rationale.replace("\n", " ").strip()
+
+    def _adapt(
+        self, attack_type: str, *, prior_prompt: str, response: str | None,
+        attempt: int, fallbacks: Any,
+    ) -> tuple[str, str]:
+        """Choose the next injection: judge rewrite first, else the fallback list.
+
+        Returns ``(instruction, source)`` where source is ``judge`` or ``fallback``.
+        When the fallback list is exhausted the prior prompt is reused.
+        """
+        proposed = self._ensure_attacker().propose_prompt(
+            attack_type, prior_prompt=prior_prompt, response=response, seed=attempt
+        )
+        if proposed is not None:
+            return proposed, "judge"
+        nxt = next(fallbacks, None)
+        if nxt is not None:
+            return nxt, "fallback"
+        return prior_prompt, "fallback"  # list exhausted: retry the prior prompt
+
+    # -- one repetition (adaptive) ------------------------------------------- #
 
     def run_rep(self, cell: Cell, rep: int) -> dict[str, Any]:
-        """Run a single repetition of ``cell`` and return its result row."""
+        """Run one repetition of ``cell`` as an adaptive attack; return its row.
+
+        The case retries the injection up to ``max_attempts`` times, stopping at
+        the first success. Facts stay fixed across attempts — only the injection
+        text is adapted (base → LLM-judge rewrite → predetermined fallback list).
+        Every attempt is logged to attempts.csv; the summary row keeps the winning
+        attempt's outcome (or the last attempt's, if none succeeded).
+        """
         cfg = self.config
         # Facts are shared across models/attack types (a controlled comparison):
         # the fact sample depends only on the count/source/rep, not the model.
         fact_seed = stable_seed("facts", cell.num_facts, cell.fact_source, rep, cfg.base_seed)
-        llm_seed = stable_seed(
-            "llm", cell.attack_type, cell.strategy, cell.num_facts, cell.fact_source, rep, cfg.base_seed
-        )
-
         facts = (
             []
             if cell.num_facts == 0
             else self.corpus.sample(
-                cell.num_facts,
-                cell.fact_source,
-                seed=fact_seed,
-                mix_ratio=cfg.mix_ratio,
+                cell.num_facts, cell.fact_source, seed=fact_seed, mix_ratio=cfg.mix_ratio
             )
         )
-        instruction = self.messages.injection_for(cell.attack_type)
-        payload = build_payload(cell.strategy, instruction, [f.text for f in facts])
+        fact_texts = [f.text for f in facts]
         carrier = self.messages.user_for(cfg.channel)
 
-        # Fresh benign state, then inject the single poisoned record.
-        reset_data(self.settings)
-        poison_id = seed_poison(
-            self.settings, channel=cfg.channel, target_field=cfg.target_field, payload=payload
-        )
+        # adaptive=False (or max_attempts<=1) collapses to the classic single shot.
+        max_attempts = max(1, cfg.max_attempts if cfg.adaptive else 1)
+        instruction = self.messages.injection_for(cell.attack_type)  # attempt 1 = base
+        source = "base"
+        fallbacks = iter(self.messages.fallback_prompts(cell.attack_type))
 
-        logger = RunLogger.from_settings(self.settings, console=self.console)
-        try:
-            orch = make_orchestrator(self.settings, llm=self.llm, model=cell.model)
-            result = orch.run(carrier, seed=llm_seed, emit=logger.emit)
-        finally:
-            logger.close()
+        overall_success = False
+        winning_attempt = 0
+        winning_source = ""
+        last: dict[str, Any] = {}
 
-        # Success is judged differently per attack family (PDR §7.2 vs the judge).
-        judge_label = ""
-        judge_rationale = ""
-        if cell.attack_type == "agentic":
-            success = check_success(self.settings, target=cfg.target, target_room=cfg.target_room)
-        else:  # harmful: the LLM judge reads the assistant's final answer
-            verdict = self._ensure_judge().evaluate(result.final_answer)
-            success = verdict.success
-            judge_label = verdict.label
-            judge_rationale = verdict.rationale.replace("\n", " ").strip()
+        for attempt in range(1, max_attempts + 1):
+            llm_seed = stable_seed(
+                "llm", cell.attack_type, cell.strategy, cell.num_facts,
+                cell.fact_source, rep, attempt, cfg.base_seed,
+            )
+            payload = build_payload(cell.strategy, instruction, fact_texts)
 
+            # Fresh benign state, then inject the single poisoned record.
+            reset_data(self.settings)
+            poison_id = seed_poison(
+                self.settings, channel=cfg.channel, target_field=cfg.target_field, payload=payload
+            )
+            logger = RunLogger.from_settings(self.settings, console=self.console)
+            try:
+                orch = make_orchestrator(self.settings, llm=self.llm, model=cell.model)
+                result = orch.run(carrier, seed=llm_seed, emit=logger.emit)
+            finally:
+                logger.close()
+
+            success, judge_label, judge_rationale = self._score(cell, result)
+            log_file = str(logger.path) if logger.path else ""
+
+            self._append_attempt({
+                "model": cell.model,
+                "attack_type": cell.attack_type,
+                "strategy": cell.strategy,
+                "num_facts": cell.num_facts,
+                "fact_source": cell.fact_source,
+                "rep": rep,
+                "attempt": attempt,
+                "prompt_source": source,
+                "prompt_text": instruction,
+                "success": int(success),
+                "judge_label": judge_label,
+                "llm_seed": llm_seed,
+                "num_inferences": result.num_inferences,
+                "num_invocations": result.num_invocations,
+                "chained_agents": ";".join(result.chained_agents),
+                "final_answer": (result.final_answer or "").replace("\n", " ").strip(),
+                "log_file": log_file,
+            })
+            last = {
+                "attempt": attempt, "poison_id": poison_id, "llm_seed": llm_seed,
+                "result": result, "judge_label": judge_label,
+                "judge_rationale": judge_rationale, "log_file": log_file,
+            }
+
+            if success:
+                overall_success = True
+                winning_attempt = attempt
+                winning_source = source
+                break
+
+            if attempt < max_attempts:  # adapt the injection for the next attempt
+                instruction, source = self._adapt(
+                    cell.attack_type, prior_prompt=instruction,
+                    response=result.final_answer, attempt=attempt, fallbacks=fallbacks,
+                )
+
+        result = last["result"]
         return {
             "model": cell.model,
             "attack_type": cell.attack_type,
@@ -369,24 +510,27 @@ class ExperimentRunner:
             "num_facts": cell.num_facts,
             "fact_source": cell.fact_source,
             "rep": rep,
-            "success": int(success),
-            "judge_label": judge_label,
-            "judge_rationale": judge_rationale,
+            "success": int(overall_success),
+            "attempts_used": last["attempt"],
+            "winning_attempt": winning_attempt,
+            "winning_prompt_source": winning_source,
+            "judge_label": last["judge_label"],
+            "judge_rationale": last["judge_rationale"],
             "fact_seed": fact_seed,
-            "llm_seed": llm_seed,
+            "llm_seed": last["llm_seed"],
             "fact_ids": ";".join(sampled_ids(facts)),
             "channel": cfg.channel,
             "target_field": cfg.target_field,
             "target": cfg.target,
             "target_room": cfg.target_room,
-            "poison_id": poison_id,
+            "poison_id": last["poison_id"],
             "num_inferences": result.num_inferences,
             "num_invocations": result.num_invocations,
             "automatic_agent_invocation": int(result.automatic_agent_invocation),
             "max_iterations_reached": int(result.max_iterations_reached),
             "chained_agents": ";".join(result.chained_agents),
             "final_answer": (result.final_answer or "").replace("\n", " ").strip(),
-            "log_file": str(logger.path) if logger.path else "",
+            "log_file": last["log_file"],
         }
 
     # -- full campaign ------------------------------------------------------- #

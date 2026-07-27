@@ -289,6 +289,11 @@ nada, solo acumula mensajes.
 
 El caso mínimo útil (una tool + una respuesta) son **dos inferencias**.
 
+> En el experimento, este `run` completo (un turno) es **un intento** del bucle
+> adaptativo: el runner puede repetirlo hasta `max_attempts` veces por caso,
+> adaptando la inyección entre intentos (**base → juez → fallback**; ver README §7.5
+> y `juez.md` §6). La mecánica de tools de esta sección es idéntica en cada intento.
+
 ### Ejemplo de traza (ataque agentic por correo)
 
 ```

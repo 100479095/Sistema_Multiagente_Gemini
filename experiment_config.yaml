@@ -36,3 +36,10 @@ target_room: "living_room"             # room checked when target == open_window
 # --- Sampling / determinism ---
 base_seed: 1000                        # per-rep seeds derive from this (logged per row)
 mix_ratio: 0.5                         # fraction of real facts when fact_source == mixed
+
+# --- Adaptive red-teaming loop (PDR: attacker adapts up to N times per case) ---
+# Each case retries the injection up to max_attempts times, stopping at the first
+# success. Between attempts the prompt is adapted: base injection -> LLM judge
+# rewrite (<prompt>...</prompt>) -> predetermined list in messages.yaml.
+max_attempts: 5                        # attack attempts per case (1 = single shot)
+adaptive: true                         # false forces a single attempt (wide sweeps)

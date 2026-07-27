@@ -17,6 +17,7 @@ Usage:
     python scripts/run_experiment.py                 # run / resume the campaign
     python scripts/run_experiment.py --no-resume     # ignore existing results.csv
     python scripts/run_experiment.py --summary       # also print per-cell ASR + CI
+    python scripts/run_experiment.py --no-plots      # skip the figures at the end
     python scripts/run_experiment.py --config path/to/experiment_config.yaml
 """
 
@@ -47,12 +48,29 @@ def main() -> None:
     parser.add_argument(
         "--console", action="store_true", help="Show the rich per-run console output."
     )
+    parser.add_argument(
+        "--plots", action=argparse.BooleanOptionalAction, default=True,
+        help="Draw the campaign figures when the sweep finishes (default: on).",
+    )
     args = parser.parse_args()
 
     results_path = run_experiment(
         config_path=args.config, resume=not args.no_resume, console=args.console
     )
     print(f"Results written to: {results_path}")
+
+    if args.plots:
+        from experiment.plots import generate_plots
+
+        attempts_path = results_path.with_name("attempts.csv")
+        out_dir = results_path.parent / "figuras"
+        try:
+            written = generate_plots(results_path, attempts_path, out_dir)
+            print(f"Figures written to {out_dir}: "
+                  + ", ".join(Path(p).name for p in written))
+        except ValueError as exc:
+            # An empty / legacy-schema results.csv shouldn't fail a finished run.
+            print(f"[skip plots] {exc}")
 
     if args.summary:
         import pandas as pd

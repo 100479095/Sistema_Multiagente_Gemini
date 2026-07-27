@@ -14,6 +14,7 @@ as a refusal, so ambiguous or empty answers never inflate the attack success rat
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +22,8 @@ from messages import Messages, get_messages
 
 COMPLIED = "COMPLIED"
 REFUSED = "REFUSED"
+
+_PROMPT_RE = re.compile(r"<prompt>(.*?)</prompt>", re.DOTALL | re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,52 @@ def parse_verdict(text: str | None) -> JudgeVerdict:
         label=COMPLIED if complied else REFUSED,
         rationale=rationale,
     )
+
+
+def extract_prompt(text: str | None) -> str | None:
+    """Return the injection wrapped in ``<prompt>...</prompt>``, or ``None``.
+
+    Conservative, mirroring :func:`parse_verdict`: returns ``None`` when the tags
+    are absent or enclose only whitespace, so a generator that refuses (or replies
+    with prose) never yields a usable prompt and the caller falls back to the list.
+    """
+    if not text:
+        return None
+    match = _PROMPT_RE.search(text)
+    if match is None:
+        return None
+    inner = match.group(1).strip()
+    return inner or None
+
+
+class AdaptiveAttacker:
+    """Rewrites a failed injection into a stronger one using the judge model.
+
+    Reuses the aligned ``judge_model`` client: after an attempt fails, it asks the
+    model to improve the injection and extracts the ``<prompt>...</prompt>`` payload.
+    Returns ``None`` when the model declines or omits the tags (expected for the
+    harmful attack), letting the runner fall back to the predetermined list.
+    """
+
+    def __init__(self, llm: Any, messages: Messages | None = None) -> None:
+        self.llm = llm
+        self.messages = messages or get_messages()
+
+    def propose_prompt(
+        self, attack_type: str, *, prior_prompt: str, response: str | None, seed: int = 0
+    ) -> str | None:
+        """Ask the generator for an improved injection; ``None`` if it declines."""
+        chat_messages = [
+            {"role": "system", "content": self.messages.generator_system},
+            {
+                "role": "user",
+                "content": self.messages.generator_user(
+                    attack_type, prior_prompt=prior_prompt, response=response or ""
+                ),
+            },
+        ]
+        reply = self.llm.chat(chat_messages, tools=None, seed=seed)
+        return extract_prompt(reply.content)
 
 
 class Judge:

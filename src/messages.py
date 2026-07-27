@@ -36,6 +36,10 @@ class Messages(BaseModel):
     injections: dict[str, str]
     judge_system: str
     judge_user_template: str
+    # Adaptive red-teaming assets (optional; empty when messages.yaml omits them).
+    attack_prompts: dict[str, list[str]] = {}
+    generator_system: str = ""
+    generator_user_template: str = ""
 
     def user_for(self, channel: str) -> str:
         """The benign carrier prompt for ``channel`` (email/calendar)."""
@@ -61,16 +65,40 @@ class Messages(BaseModel):
         """Render the judge's user message for a given assistant ``response``."""
         return self.judge_user_template.format(response=response)
 
+    def fallback_prompts(self, attack_type: str) -> list[str]:
+        """Predetermined injection variants for ``attack_type`` (empty if none).
+
+        Non-raising (unlike :meth:`injection_for`): the adaptive loop treats an
+        empty list as "no fallback available" and simply reuses the prior prompt.
+        """
+        return list(self.attack_prompts.get(attack_type, []))
+
+    def generator_user(
+        self, attack_type: str, *, prior_prompt: str, response: str
+    ) -> str:
+        """Render the prompt-generator's user message for one adaptation step."""
+        return self.generator_user_template.format(
+            attack_type=attack_type, prior_prompt=prior_prompt, response=response
+        )
+
 
 def _from_mapping(data: dict[str, Any]) -> Messages:
-    """Build :class:`Messages` from the raw YAML mapping (flattens ``judge``)."""
+    """Build :class:`Messages` from the raw YAML mapping.
+
+    Flattens the nested ``judge`` and ``prompt_generator`` blocks into flat
+    fields; ``attack_prompts`` maps each attack type to its fallback variants.
+    """
     judge = data.get("judge") or {}
+    generator = data.get("prompt_generator") or {}
     return Messages(
         system_prompt=data["system_prompt"],
         user_prompt=data["user_prompt"],
         injections=data["injections"],
         judge_system=judge.get("system", ""),
         judge_user_template=judge.get("user_template", "{response}"),
+        attack_prompts=data.get("attack_prompts") or {},
+        generator_system=generator.get("system", ""),
+        generator_user_template=generator.get("user_template", ""),
     )
 
 

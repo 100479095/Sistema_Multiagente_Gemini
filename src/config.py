@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     orchestrator: OrchestratorSettings = Field(default_factory=OrchestratorSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    # Assistant model(s) swept by the experiment pipeline (aligned vs unaligned).
+    # This is the single source of truth for which models the campaign runs;
+    # experiment_config.yaml's own ``models`` is only a fallback (see
+    # ExperimentConfig.load). Overridable via TESTBED_MODELS or config.yaml.
+    models: list[str] = Field(
+        default_factory=lambda: ["qwen2.5:7b", "dolphin3-tools:8b"]
+    )
 
     @classmethod
     def settings_customise_sources(

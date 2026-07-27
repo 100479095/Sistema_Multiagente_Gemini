@@ -239,7 +239,9 @@ Resultado obtenido: `HTTP_STATUS:200` y una tool call estructurada:
 
 ### Paso 7 — Apuntar el experimento al nuevo modelo
 
-En `experiment_config.yaml`:
+Los modelos del barrido se leen de **`config.yaml`** (fuente única de verdad; el
+`models:` de `experiment_config.yaml` es solo un fallback que el runner sobrescribe
+al cargar):
 
 ```yaml
 models: ["qwen2.5:7b", "dolphin3-tools:8b"]   # main assistant LLM (swept)

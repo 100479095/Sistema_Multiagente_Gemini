@@ -2,6 +2,11 @@
 # All values can be overridden via environment variables prefixed with TESTBED_
 # (e.g. TESTBED_LLM__MODEL=qwen3:8b). See src/config.py.
 
+# Assistant model(s) the experiment pipeline sweeps (aligned vs unaligned).
+# This is the single source of truth for the campaign; experiment_config.yaml's
+# own `models` is only a fallback. Override with TESTBED_MODELS if needed.
+models: ["qwen2.5:7b", "dolphin3-tools:8b"]
+
 llm:
   # Ollama exposes an OpenAI-compatible endpoint at /v1.
   base_url: "http://localhost:11434/v1"
