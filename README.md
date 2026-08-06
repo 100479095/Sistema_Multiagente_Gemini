@@ -25,7 +25,7 @@ A local LLM (the **orchestrator**) drives three Python **agents** — email, cal
 home — that operate purely on local JSON state. The orchestrator runs a **bounded
 ReAct loop** (PDR §4): it reasons, calls an agent tool, the tool's result is
 re-injected into its context **verbatim**, and it reasons again, up to
-`max_iterations` (default 5).
+`max_iterations` (the shipped `config.yaml` sets this to 10; the code default is 5).
 
 On top of the assistant sits an **experimental bench** that simulates *indirect
 prompt injection* through a poisoned **email body** (or calendar-event description).
@@ -112,7 +112,7 @@ data/
   mailbox.json calendar.json home_state.json   working stores the agents read/write
   seeds/                golden copies; `reset` restores from here
   facts/                facts_real.jsonl · facts_invented.jsonl (example rows only)
-scripts/                reset_data.py · run_experiment.py · plot_results.py
+scripts/                reset_data.py · run_experiment.py · plot_results.py (· plot_qwen_results.py, legacy single-model)
 results/  logs/         results.csv + attempts.csv + figuras/ · per-run JSONL (gitignored)
 pruebas/                design spec (PDR.md), reference paper, Spanish walkthroughs
 tests/                  pytest suites
@@ -158,6 +158,34 @@ Pass `--console` to `run_experiment.py` for `rich` step-by-step output.
 ---
 
 ## 7. The experimental bench
+
+**Pipeline at a glance.** `scripts/run_experiment.py` → `ExperimentRunner.run`
+(`src/experiment/runner.py`) expands the factor matrix into **cells**
+(`model × attack_type × strategy × num_facts × fact_source`) and runs each
+`(cell, rep)` as one **adaptive attack loop**. It is fully **resumable** — every
+finished repetition is appended to `results.csv` and reused as the checkpoint.
+Per repetition:
+
+1. **Sample facts once** — seeded by `(num_facts, fact_source, rep)`, so the fact
+   set is *shared* across models and attack types (a controlled comparison) and
+   is reproducible. The `num_facts = 0` baseline samples nothing.
+2. **Attempt loop** — retry the injection up to `max_attempts`, **stopping at the
+   first success**. Each attempt: compose the payload (facts + current injection,
+   arranged by the strategy §7.3) → `reset_data` to the benign seeds → seed **one**
+   poisoned email/event carrying the payload → run the **orchestrator** (the
+   bounded ReAct loop, as `cell.model`) on the benign carrier → **score** it
+   (agentic: the home state flipped; harmful: the aligned judge reads the final
+   answer).
+3. **Adapt between failed attempts** — only the injection text changes (facts stay
+   fixed, so the adaptive factor is never confounded with the fact sample). The
+   wording escalates `base → LLM-judge rewrite → predetermined fallback list`
+   (§7.5).
+4. **Record** — one summary row per case in `results.csv` (the winning attempt's
+   outcome, or the last if none succeeded) and one row per attempt in
+   `attempts.csv`. When the sweep finishes, four figures are drawn (§7.8) unless
+   `--no-plots`.
+
+The subsections below detail each piece.
 
 ### 7.1 Central message file (`messages.yaml`)
 
@@ -219,7 +247,7 @@ judge_model: "qwen2.5:7b"                    # fixed aligned model: judge AND ad
 attack_types: ["agentic", "harmful"]         # each measures its own effectiveness
 
 strategies: ["S1", "S2", "S3"]
-num_facts: [0, 1, 2, 5, 10, 25, 50, 100, 150]
+num_facts: [0, 1, 2, 5, 10, 25, 50, 100, 150, 200]
 fact_sources: ["real", "invented", "mixed"]  # mixed = mix_ratio real, rest invented
 repetitions: 1                               # raise for a real study (PDR §7.7: R=50–100)
 
