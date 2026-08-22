@@ -155,6 +155,89 @@ def test_max_iterations_cap(registry):
 
 
 # --------------------------------------------------------------------------- #
+# RunResult.full_messages() — the whole transcript the harmful judge scores
+# --------------------------------------------------------------------------- #
+
+
+def test_full_messages_reconstructs_full_transcript(registry):
+    llm = ScriptedLLMClient(
+        [
+            AssistantMessage(tool_calls=[_tc("list_events", {}, "a")]),
+            AssistantMessage(content="Here are your events."),
+        ]
+    )
+    orch = Orchestrator(llm, registry, OrchestratorSettings(max_iterations=5))
+
+    result = orch.run("Read my events this week.")
+
+    msgs = result.full_messages()
+    roles = [m["role"] for m in msgs]
+    # system + user + tool-calling assistant + tool result + appended final answer.
+    assert roles == ["system", "user", "assistant", "tool", "assistant"]
+    assert msgs[2].get("tool_calls")  # the tool-calling turn is preserved
+    assert msgs[3]["role"] == "tool"  # untrusted agent output included verbatim
+    # The final answer is appended as the last assistant message.
+    assert msgs[-1] == {"role": "assistant", "content": "Here are your events."}
+
+
+def test_full_messages_without_final_answer_ends_at_last_tool_result(registry):
+    llm = AlwaysToolClient()
+    orch = Orchestrator(llm, registry, OrchestratorSettings(max_iterations=3))
+
+    result = orch.run("loop forever")
+
+    assert result.final_answer is None
+    msgs = result.full_messages()
+    assert msgs, "expected the accumulated conversation"
+    assert msgs[0]["role"] == "system"
+    # No final answer to append: the transcript ends at the last tool result and
+    # no assistant message carries delivered content.
+    assert msgs[-1]["role"] == "tool"
+    assert all(not (m["role"] == "assistant" and m.get("content")) for m in msgs)
+
+
+def test_full_messages_empty_without_iterations():
+    from orchestrator.orchestrator import RunResult
+
+    empty = RunResult(
+        user_prompt="hi",
+        final_answer=None,
+        iterations=[],
+        num_inferences=0,
+        num_invocations=0,
+        max_iterations_reached=False,
+        chained_agents=[],
+        automatic_agent_invocation=False,
+        provenance=[],
+    )
+    assert empty.full_messages() == []
+
+
+def test_inference_event_records_finish_reason(registry):
+    """Truncation must be visible in the log, not inferred from text length.
+
+    ``max_tokens`` caps generation, so an answer can end because the model
+    finished (``stop``) or because it ran out of budget (``length``). Only the
+    log can tell them apart: results.csv stores the text, which looks identical.
+    """
+    llm = ScriptedLLMClient(
+        [
+            AssistantMessage(
+                tool_calls=[_tc("list_events", {}, "a")], finish_reason="tool_calls"
+            ),
+            AssistantMessage(content="A summary cut mid-", finish_reason="length"),
+        ]
+    )
+    orch = Orchestrator(llm, registry, OrchestratorSettings(max_iterations=5))
+
+    events: list[dict] = []
+    orch.run("Read my events this week.", emit=events.append)
+
+    inferences = [e for e in events if e["event"] == "inference"]
+    assert [e["finish_reason"] for e in inferences] == ["tool_calls", "length"]
+
+
+# --------------------------------------------------------------------------- #
 # Re-injection (PDR §6) and pass-through plumbing
 # --------------------------------------------------------------------------- #
 

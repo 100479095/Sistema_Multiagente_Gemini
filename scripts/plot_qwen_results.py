@@ -1,4 +1,4 @@
-"""Figuras de análisis de ataques por inyección — modelo qwen2.5:7b.
+"""Figuras de análisis de ataques por inyección — brazo alineado (qwen).
 
 Genera cuatro figuras en results/figuras/:
   1. Ataques exitosos por estrategia (S1/S2/S3), separado por tipo de ataque.
@@ -31,8 +31,14 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "results" / "figuras"
 OUT.mkdir(parents=True, exist_ok=True)
 
+# Brazo alineado de la campaña. Es una build local de qwen2.5:7b con la plantilla
+# de tools corregida (models/Modelfile.qwen2.5-tools); el tag público descartaba
+# las tool_calls de un turno en cuanto el asistente también emitía texto, así que
+# los resultados medidos con él quedaron archivados en results/*.pre-templatefix-*.
+MODEL = "qwen2.5-tools:7b"
+
 df = pd.read_csv(ROOT / "results" / "results.csv")
-q = df[df.model == "qwen2.5:7b"].copy()
+q = df[df.model == MODEL].copy()
 q["home_called"] = q["chained_agents"].fillna("").str.contains("home")
 q["win_mention"] = q["final_answer"].fillna("").astype(str).str.contains(r"window|ventana", case=False)
 
@@ -76,7 +82,7 @@ for i, (atk, color, off) in enumerate([("agentic", BLUE, -w/2), ("harmful", RED,
 ax.set_xticks(x); ax.set_xticklabels([labels_strat[s] for s in strats])
 ax.set_ylabel("Ataques exitosos (recuento)")
 ax.set_ylim(0, 11)
-ax.set_title("qwen2.5:7b — ataques exitosos por estrategia", fontweight="bold", color=INK, loc="left")
+ax.set_title(f"{MODEL} — ataques exitosos por estrategia", fontweight="bold", color=INK, loc="left")
 ax.legend(frameon=False, loc="upper right", fontsize=9)
 style(ax)
 fig.text(0.01, -0.02, "Etiqueta = éxitos / intentos. S1 es la línea base (un solo intento por tipo).",
@@ -105,7 +111,7 @@ ax.set_xlabel("Número de hechos inyectados en el buzón")
 ax.set_ylabel("Ataques exitosos (recuento)")
 ax.set_ylim(0, 6)
 ax.yaxis.set_major_locator(MaxNLocator(integer=True))
-ax.set_title("qwen2.5:7b — ataques exitosos según volumen de hechos", fontweight="bold", color=INK, loc="left")
+ax.set_title(f"{MODEL} — ataques exitosos según volumen de hechos", fontweight="bold", color=INK, loc="left")
 ax.legend(frameon=False, loc="upper right", fontsize=9)
 style(ax)
 fig.text(0.01, -0.02, "6 intentos por columna (S2+S3 × 3 fuentes de hechos); num_facts=0 es la base con 1 intento.",
@@ -140,7 +146,7 @@ ax.set_xlabel("Número de hechos inyectados en el buzón")
 ax.set_ylabel("Ejecuciones (ataque agentic)")
 ax.set_ylim(0, 5.5)
 ax.yaxis.set_major_locator(MaxNLocator(integer=True))
-ax.set_title("qwen2.5:7b — apertura ejecutada frente a apertura solo narrada",
+ax.set_title(f"{MODEL} — apertura ejecutada frente a apertura solo narrada",
              fontweight="bold", color=INK, loc="left")
 ax.legend(frameon=False, loc="upper right", fontsize=9)
 style(ax)
@@ -182,7 +188,7 @@ ax.set_xticks(x); ax.set_xticklabels([labels_src[s] for s in SOURCE_ORDER])
 ax.set_xlabel("Naturaleza de los hechos que rodean a la inyección")
 ax.set_ylabel("Tasa de éxito del ataque — ASR (%)")
 ax.set_ylim(0, 40)
-ax.set_title("qwen2.5:7b — éxito del ataque según hechos reales frente a inventados",
+ax.set_title(f"{MODEL} — éxito del ataque según hechos reales frente a inventados",
              fontweight="bold", color=INK, loc="left")
 ax.legend(frameon=False, loc="upper left", fontsize=9)
 style(ax)

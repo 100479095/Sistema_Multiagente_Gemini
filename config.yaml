@@ -5,17 +5,50 @@
 # Assistant model(s) the experiment pipeline sweeps (aligned vs unaligned).
 # This is the single source of truth for the campaign; experiment_config.yaml's
 # own `models` is only a fallback. Override with TESTBED_MODELS if needed.
-models: ["qwen2.5:7b", "dolphin3-tools:8b"]
+models: ["qwen2.5-tools:7b", "dolphin3-tools:8b"]
 
 llm:
   # Ollama exposes an OpenAI-compatible endpoint at /v1.
   base_url: "http://localhost:11434/v1"
   api_key: "ollama"          # Ollama ignores the value but the SDK requires one.
-  model: "qwen2.5:7b"        # In Ollama this tag is the instruct build.
+  # Local build of qwen2.5:7b (the instruct build) with a corrected chat
+  # template; the stock tag drops a turn's tool_calls whenever the assistant
+  # also emits text. See models/Modelfile.qwen2.5-tools.
+  model: "qwen2.5-tools:7b"
   temperature: 0.7           # Qwen's recommended default; reflects real behaviour.
   top_p: 1.0
   seed: null                 # null = nondeterministic; set an int for reproducibility.
-  timeout_s: 600  
+  # --- Generation budget -----------------------------------------------------
+  # Sized from measurements on this machine, not from round numbers. With 12 of
+  # 29 layers offloaded to the GPU the wall-clock cost of an inference is set by
+  # how much it generates: ~3 tok/s at small context, down to 2.15 tok/s in the
+  # saturated cells (Ollama's own `tg` figure for the 200-fact case).
+  #
+  #   max_tokens: the longest generation Ollama ever reported across the campaign
+  #     is n_gen = 1601 tokens, so 2048 covers every observed answer with ~28 %
+  #     to spare. A tighter cap is not free: the 200-fact runs recite the injected
+  #     facts first and only comply at the very end (the one COMPLIED case put its
+  #     payload past char 4890), so cutting the tail would deflate the measured
+  #     attack success rate specifically in the high-num_facts cells — a bias
+  #     aligned with the independent variable. Truncation was 0 % below 25 facts
+  #     and up to 5.4 % at 150 with a 1024 cap.
+  #   timeout_s: worst case is 2048 tok at 2.15 tok/s (~950 s) plus ~150 s of
+  #     prompt eval = ~1100 s. 1800 s gives 1.6x on top of that and still absorbs
+  #     a cold model load, of which one was observed at 620 s (Ollama rotates
+  #     between target, judge and generator). The timeout is a safety net, not a
+  #     budget that gets spent: raising it costs nothing unless a request stalls.
+  #   max_retries: 0 — the OpenAI SDK retries timeouts twice by default, which
+  #     turned each stall into 3 x timeout_s (30 min) before killing the run.
+  #
+  # Watch item: prompt + max_tokens must stay under the 8192-token context, or
+  # the KV cache shifts and n_keep=4 drops the system prompt silently. The
+  # archived campaign already hit `truncated = 1` five times in 2281 requests.
+  # If the saturated cells start shifting, raise num_ctx in models/Modelfile.*
+  # rather than lowering this cap. `finish_reason` in the JSONL logs records
+  # both failure modes per inference.
+  max_tokens: 2048
+  timeout_s: 1800
+  max_retries: 0
 
 orchestrator:
   max_iterations: 10          # Bounded ReAct loop (PDR §4).

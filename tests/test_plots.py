@@ -23,7 +23,7 @@ EXPECTED_FIGURES = {
     "fig4_fuente_prompt_ganador.png",
 }
 
-MODELS = ["qwen2.5:7b", "dolphin3-tools:8b"]
+MODELS = ["qwen2.5-tools:7b", "dolphin3-tools:8b"]
 
 
 def _result_row(**over) -> dict:
@@ -67,14 +67,14 @@ def synthetic_campaign(tmp_path: Path) -> tuple[Path, Path]:
     attempts: list[dict] = []
 
     # qwen agentic: a win at attempt 2 via the judge, and a failure.
-    results.append(_result_row(model="qwen2.5:7b", attack_type="agentic",
+    results.append(_result_row(model="qwen2.5-tools:7b", attack_type="agentic",
                                strategy="S2", success=1, attempts_used=2,
                                winning_attempt=2, winning_prompt_source="judge"))
-    results.append(_result_row(model="qwen2.5:7b", attack_type="agentic",
+    results.append(_result_row(model="qwen2.5-tools:7b", attack_type="agentic",
                                strategy="S3", success=0, attempts_used=5,
                                winning_attempt=0, winning_prompt_source=""))
     # qwen harmful: a win at attempt 3 via the fallback list.
-    results.append(_result_row(model="qwen2.5:7b", attack_type="harmful",
+    results.append(_result_row(model="qwen2.5-tools:7b", attack_type="harmful",
                                strategy="S2", success=1, attempts_used=3,
                                winning_attempt=3, winning_prompt_source="fallback"))
     # dolphin agentic + harmful: immediate wins at attempt 1 (base).
@@ -88,10 +88,10 @@ def synthetic_campaign(tmp_path: Path) -> tuple[Path, Path]:
     results.append(_result_row(model="", attack_type="agentic", success=1))
 
     # attempts.csv: one attempt-1 row per case (some fail on attempt 1).
-    attempts.append(_attempt_row(model="qwen2.5:7b", attack_type="agentic", success=0))
-    attempts.append(_attempt_row(model="qwen2.5:7b", attack_type="agentic",
+    attempts.append(_attempt_row(model="qwen2.5-tools:7b", attack_type="agentic", success=0))
+    attempts.append(_attempt_row(model="qwen2.5-tools:7b", attack_type="agentic",
                                  strategy="S3", success=0))
-    attempts.append(_attempt_row(model="qwen2.5:7b", attack_type="harmful", success=0))
+    attempts.append(_attempt_row(model="qwen2.5-tools:7b", attack_type="harmful", success=0))
     attempts.append(_attempt_row(model="dolphin3-tools:8b", attack_type="agentic", success=1))
     attempts.append(_attempt_row(model="dolphin3-tools:8b", attack_type="harmful", success=1))
 

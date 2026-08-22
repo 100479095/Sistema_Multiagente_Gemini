@@ -120,6 +120,84 @@ def test_list_emails_returns_headers_without_body(mailbox_path):
     assert "body" not in result["emails"][0]
 
 
+@pytest.mark.parametrize("folder", ["INBOX", "Inbox", " inbox "])
+def test_list_emails_folder_is_case_insensitive(mailbox_path, folder):
+    # Models phrase the folder as "INBOX"/"Inbox"; matching it verbatim against
+    # the stored "inbox" reported an empty mailbox.
+    agent = EmailAgent(mailbox_path)
+    assert agent.list_emails(folder=folder)["count"] == agent.list_emails()["count"]
+
+
+@pytest.mark.parametrize("folder", [None, ""])
+def test_list_emails_without_folder_returns_every_email(mailbox_path, folder):
+    agent = EmailAgent(mailbox_path)
+    result = agent.call("list_emails", {"folder": folder})
+    assert result["count"] == len(load_json(mailbox_path))
+
+
+def test_list_emails_accepts_explicit_null_limit(mailbox_path):
+    # Small models send {"limit": null} instead of omitting the argument.
+    agent = EmailAgent(mailbox_path)
+    result = agent.call("list_emails", {"folder": "inbox", "limit": None})
+    assert result["count"] >= 1
+
+
+@pytest.fixture()
+def unsorted_mailbox_path(tmp_path) -> str:
+    """A mailbox whose file order is the reverse of its date order.
+
+    The experiment seeds its poisoned email with ``append`` (runner.seed_poison),
+    so the newest message is always *last* in the file — exactly the position the
+    unsorted implementation surfaced last, or dropped under ``limit``.
+    """
+    p = tmp_path / "unsorted.json"
+    save_json(
+        p,
+        [
+            {"id": "old", "subject": "Oldest", "date": "2026-06-01T09:00:00", "folder": "inbox"},
+            {"id": "mid", "subject": "Middle", "date": "2026-06-03T09:00:00", "folder": "inbox"},
+            {"id": "new", "subject": "Newest", "date": "2026-06-05T09:00:00", "folder": "inbox"},
+        ],
+    )
+    return str(p)
+
+
+def test_list_emails_returns_most_recent_first(unsorted_mailbox_path):
+    # The tool description promises "most recent first"; it used to return file
+    # order, so the newest email came last.
+    agent = EmailAgent(unsorted_mailbox_path)
+    ids = [e["id"] for e in agent.list_emails()["emails"]]
+    assert ids == ["new", "mid", "old"]
+
+
+def test_list_emails_limit_keeps_the_most_recent(unsorted_mailbox_path):
+    # The limit must slice *after* sorting, otherwise it drops the newest emails.
+    agent = EmailAgent(unsorted_mailbox_path)
+    ids = [e["id"] for e in agent.list_emails(limit=2)["emails"]]
+    assert ids == ["new", "mid"]
+
+
+def test_list_emails_sorts_undated_emails_last(tmp_path):
+    # A missing/empty date must not crash the sort nor outrank a real one.
+    p = tmp_path / "undated.json"
+    save_json(
+        p,
+        [
+            {"id": "undated", "subject": "No date", "folder": "inbox"},
+            {"id": "dated", "subject": "Dated", "date": "2026-06-05T09:00:00", "folder": "inbox"},
+        ],
+    )
+    agent = EmailAgent(str(p))
+    ids = [e["id"] for e in agent.list_emails()["emails"]]
+    assert ids == ["dated", "undated"]
+
+
+def test_search_emails_accepts_explicit_null_limit(mailbox_path):
+    agent = EmailAgent(mailbox_path)
+    result = agent.call("search_emails", {"query": "order", "limit": None})
+    assert result["count"] >= 1
+
+
 def test_read_email_returns_full_body(mailbox_path):
     agent = EmailAgent(mailbox_path)
     result = agent.read_email(email_id="m1")

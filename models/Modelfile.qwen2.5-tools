@@ -1,0 +1,103 @@
+# qwen2.5-tools:7b
+#
+# Variante del proyecto con la plantilla de tool-calling CORREGIDA.
+#
+# La plantilla que Ollama empaqueta con qwen2.5 (y que dolphin3-tools heredaba)
+# renderiza la rama `assistant` con un if/else:
+#
+#     {{ if .Content }}{{ .Content }}
+#     {{- else if .ToolCalls }}<tool_call>...</tool_call>
+#
+# Si el mensaje assistant lleva texto Y tool_calls, la llamada NO se renderiza:
+# desaparece del prompt de la inferencia siguiente. El modelo deja de verse
+# invocando tools y o bien deja de invocarlas (qwen: corte prematuro) o bien
+# empieza a escribir el <tool_response> el mismo (dolphin). Medido sobre 1.860
+# runs: afectaba al 83,2 % de los runs de qwen y al 12,7 % de los de dolphin.
+#
+# El defecto es del port de Ollama, no de Qwen: la plantilla OFICIAL de Qwen2.5
+# (Jinja de tokenizer_config.json en Qwen/Qwen2.5-7B-Instruct) emite el turno
+# assistant como dos bloques independientes -- `{%- if message.content %}` y,
+# aparte, `{%- for tool_call in message.tool_calls %}` -- de modo que narracion y
+# llamada salen las dos. Al portarla a Go template se fusionaron en un if/else.
+# Por eso NO vale con usar el tag publico: el 20/08/2026 el manifiesto del
+# registry es identico al local (capa de plantilla sha256:eb4402837c78..., misma
+# capa de pesos sha256:2bada8a745...), asi que `ollama pull qwen2.5:7b` sigue
+# trayendo el if/else. Este Modelfile no se desvia de lo oficial, vuelve a ello.
+#
+# Aqui son dos `if` independientes, con el mismo renderizado que la plantilla
+# oficial de Qwen2.5. Los dos casos que ya funcionaban (solo texto, solo llamada)
+# salen identicos al original -- mismo recuento de tokens de prompt, 46 y 60 en
+# la conversacion de prueba -- y solo cambia el caso texto+llamada, que pasa de
+# 46 a 65 tokens porque la llamada ya no desaparece.
+#
+# CUIDADO al editar esta rama: Ollama deduce el prefijo con el que reconoce una
+# tool call en la salida del modelo a partir del TEXTO LITERAL con el que arranca
+# la primera rama de la plantilla que menciona `.ToolCalls`. Si esa rama empieza
+# por una accion (p. ej. `{{ if .Content }}`) en lugar de por `<tool_call>`,
+# Ollama deja de parsear las llamadas y las devuelve como texto dentro de
+# `content`: el testbed las rescata con extract_text_tool_calls, asi que todo
+# parece funcionar, pero es una degradacion silenciosa. Por eso el salto de linea
+# separador va DENTRO de la rama de .Content y no al principio de la de
+# .ToolCalls. probe_tool_template.py comprueba exactamente esto.
+#
+# Reconstruir:  ollama create qwen2.5-tools:7b -f models/Modelfile.qwen2.5-tools
+# Verificar:    .venv/Scripts/python.exe scripts/probe_tool_template.py
+#
+# Tag propio en vez de sobrescribir `qwen2.5:7b`: quien reproduzca el TFG
+# haciendo `ollama pull qwen2.5:7b` se llevaria la plantilla rota, y nada en los
+# artefactos lo delataria.
+FROM qwen2.5:7b
+TEMPLATE """{{- if .Messages }}
+{{- if or .System .Tools }}<|im_start|>system
+{{- if .System }}
+{{ .System }}
+{{- end }}
+{{- if .Tools }}
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{{- range .Tools }}
+{"type": "function", "function": {{ .Function }}}
+{{- end }}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+{{- end }}<|im_end|>
+{{ end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{- if .Content }}
+{{ .Content }}
+{{- end }}
+{{- if .ToolCalls }}
+<tool_call>
+{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{ end }}</tool_call>
+{{- end }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- else if eq .Role "tool" }}<|im_start|>user
+<tool_response>
+{{ .Content }}
+</tool_response><|im_end|>
+{{ end }}
+{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
+{{ end }}
+{{- end }}
+{{- else }}
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
+SYSTEM You are Qwen, created by Alibaba Cloud. You are a helpful assistant.

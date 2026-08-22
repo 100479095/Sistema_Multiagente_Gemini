@@ -1,0 +1,96 @@
+# dolphin3-tools:8b
+#
+# Variante del proyecto con la plantilla de tool-calling CORREGIDA.
+#
+# La plantilla que Ollama empaqueta con qwen2.5 (y que dolphin3-tools heredaba)
+# renderiza la rama `assistant` con un if/else:
+#
+#     {{ if .Content }}{{ .Content }}
+#     {{- else if .ToolCalls }}<tool_call>...</tool_call>
+#
+# Si el mensaje assistant lleva texto Y tool_calls, la llamada NO se renderiza:
+# desaparece del prompt de la inferencia siguiente. El modelo deja de verse
+# invocando tools y o bien deja de invocarlas (qwen: corte prematuro) o bien
+# empieza a escribir el <tool_response> el mismo (dolphin). Medido sobre 1.860
+# runs: afectaba al 83,2 % de los runs de qwen y al 12,7 % de los de dolphin.
+#
+# Aqui son dos `if` independientes, con el mismo renderizado que la plantilla
+# oficial de Qwen2.5. Los dos casos que ya funcionaban (solo texto, solo llamada)
+# salen identicos al original -- mismo recuento de tokens de prompt, 46 y 60 en
+# la conversacion de prueba -- y solo cambia el caso texto+llamada, que pasa de
+# 46 a 65 tokens porque la llamada ya no desaparece.
+#
+# CUIDADO al editar esta rama: Ollama deduce el prefijo con el que reconoce una
+# tool call en la salida del modelo a partir del TEXTO LITERAL con el que arranca
+# la primera rama de la plantilla que menciona `.ToolCalls`. Si esa rama empieza
+# por una accion (p. ej. `{{ if .Content }}`) en lugar de por `<tool_call>`,
+# Ollama deja de parsear las llamadas y las devuelve como texto dentro de
+# `content`: el testbed las rescata con extract_text_tool_calls, asi que todo
+# parece funcionar, pero es una degradacion silenciosa. Por eso el salto de linea
+# separador va DENTRO de la rama de .Content y no al principio de la de
+# .ToolCalls. probe_tool_template.py comprueba exactamente esto.
+#
+# Reconstruir:  ollama create dolphin3-tools:8b -f models/Modelfile.dolphin3-tools
+# Verificar:    .venv/Scripts/python.exe scripts/probe_tool_template.py
+#
+# Base upstream real: `dolphin3:8b` (pesos Dolphin + plantilla de tools de
+# qwen2.5, que dolphin3 no trae). El FROM apunta al artefacto local ya
+# construido para reconstruir in situ sin volver a descargar 4,9 GB; desde cero,
+# cambiar el FROM a `dolphin3:8b`.
+FROM dolphin3-tools:8b
+TEMPLATE """{{- if .Messages }}
+{{- if or .System .Tools }}<|im_start|>system
+{{- if .System }}
+{{ .System }}
+{{- end }}
+{{- if .Tools }}
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{{- range .Tools }}
+{"type": "function", "function": {{ .Function }}}
+{{- end }}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+{{- end }}<|im_end|>
+{{ end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{- if .Content }}
+{{ .Content }}
+{{- end }}
+{{- if .ToolCalls }}
+<tool_call>
+{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{ end }}</tool_call>
+{{- end }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- else if eq .Role "tool" }}<|im_start|>user
+<tool_response>
+{{ .Content }}
+</tool_response><|im_end|>
+{{ end }}
+{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
+{{ end }}
+{{- end }}
+{{- else }}
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
+SYSTEM You are Dolphin, a helpful AI assistant.
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"

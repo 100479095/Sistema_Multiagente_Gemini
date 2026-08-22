@@ -29,11 +29,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 class LLMSettings(BaseModel):
     base_url: str = "http://localhost:11434/v1"
     api_key: str = "ollama"
-    model: str = "qwen2.5:7b"
+    model: str = "qwen2.5-tools:7b"
     temperature: float = 0.7
     top_p: float = 1.0
     seed: int | None = None
-    timeout_s: int = 120
+    timeout_s: int = 1800
+    #: Hard ceiling on generated tokens (``None`` = unbounded). Without it the
+    #: only limit is the context window, and on a partially offloaded model
+    #: (~2 tok/s) a runaway answer outlives any timeout. See ``config.yaml``.
+    max_tokens: int | None = 2048
+    #: Retries the OpenAI SDK may spend on a failed request. Default 0: a
+    #: timeout here means "too slow", not "transient", so retrying only
+    #: multiplies ``timeout_s`` by the number of attempts.
+    max_retries: int = 0
 
 
 class OrchestratorSettings(BaseModel):
@@ -116,7 +124,7 @@ class Settings(BaseSettings):
     # experiment_config.yaml's own ``models`` is only a fallback (see
     # ExperimentConfig.load). Overridable via TESTBED_MODELS or config.yaml.
     models: list[str] = Field(
-        default_factory=lambda: ["qwen2.5:7b", "dolphin3-tools:8b"]
+        default_factory=lambda: ["qwen2.5-tools:7b", "dolphin3-tools:8b"]
     )
 
     @classmethod

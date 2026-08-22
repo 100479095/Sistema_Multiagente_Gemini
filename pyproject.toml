@@ -22,6 +22,6 @@ where = ["src"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
-    "integration: tests that require a live Ollama server and the qwen2.5:7b model",
+    "integration: tests that require a live Ollama server and the qwen2.5-tools:7b model",
 ]
 addopts = "-ra"

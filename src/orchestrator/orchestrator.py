@@ -58,6 +58,25 @@ class RunResult:
     automatic_agent_invocation: bool
     provenance: list[Fragment]
 
+    def full_messages(self) -> list[dict[str, Any]]:
+        """The complete conversation the loop built (for the harmful judge).
+
+        Short-term memory grows monotonically, so the *last* iteration's
+        ``messages_sent`` is the largest snapshot: the whole conversation up to —
+        but not including — the final assistant reply. Appending ``final_answer``
+        (when the run terminated with one) reconstructs the full transcript,
+        system prompt through final answer. Returns ``[]`` when there were no
+        iterations. In the ``max_iterations_reached`` case ``final_answer`` is
+        ``None``, so the trailing tool-calling turn is not appended — but there is
+        no delivered final answer to score there anyway.
+        """
+        if not self.iterations:
+            return []
+        messages = [dict(m) for m in self.iterations[-1].messages_sent]
+        if self.final_answer is not None:
+            messages.append({"role": "assistant", "content": self.final_answer})
+        return messages
+
 
 class Orchestrator:
     """Drives the bounded ReAct loop over an :class:`LLMClient` and registry."""
@@ -125,6 +144,10 @@ class Orchestrator:
                     "messages_sent": messages_sent,
                     "response_text": assistant.content,
                     "tool_calls": serialized_tool_calls,
+                    # "length" == the reply hit max_tokens and is cut mid-text.
+                    # results.csv stores only the text, where a truncated answer
+                    # looks complete; this is the only place it is recorded.
+                    "finish_reason": assistant.finish_reason,
                 }
             )
 

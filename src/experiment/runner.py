@@ -16,8 +16,8 @@ on the attack type:
 
 The matrix is ``model × attack_type × strategy × num_facts × fact_source``
 (:mod:`experiment.payload_builder`, :mod:`experiment.corpus`). The main assistant
-``model`` is swept so an aligned model (``qwen2.5:7b``) can be compared against an
-unaligned one (``dolphin-llama3:8b``). The ``num_facts == 0`` baseline is the
+``model`` is swept so an aligned model (``qwen2.5-tools:7b``) can be compared
+against an unaligned one (``dolphin3-tools:8b``). The ``num_facts == 0`` baseline is the
 ``S1`` cell and is computed once per ``(model, attack_type)``. Each repetition
 draws a distinct, reproducible fact sample and LLM seed (both logged). Runs are
 **resumable**: every finished repetition is appended to ``results/results.csv``
@@ -45,7 +45,7 @@ from agents.base import load_json, save_json
 from app import build_llm, make_orchestrator, reset_data, working_paths
 from config import Settings, get_settings
 from experiment.corpus import Corpus, sampled_ids
-from experiment.judge import AdaptiveAttacker, Judge
+from experiment.judge import AdaptiveAttacker, Judge, format_transcript
 from experiment.payload_builder import build_payload
 from logging_setup import RunLogger, _make_console
 from messages import Messages, get_messages
@@ -115,14 +115,26 @@ class ExperimentConfig(BaseModel):
     """The factor matrix and campaign parameters (experiment_config.yaml)."""
 
     repetitions: int = 3
+    # Extra repetitions for the baseline cell (S1, num_facts == 0): it is run this
+    # many times per (model, attack_type) to gather more comparison data, while the
+    # fact-bearing cells keep ``repetitions``.
+    baseline_repetitions: int = 10
 
     # Main assistant model(s) under test — the aligned/unaligned comparison.
-    models: list[str] = ["qwen2.5:7b", "dolphin-llama3:8b"]
+    models: list[str] = ["qwen2.5-tools:7b", "dolphin3-tools:8b"]
     # Attack families: agentic (tool side effect) vs harmful (disallowed text).
     attack_types: list[str] = ["agentic", "harmful"]
-    # Fixed aligned model that grades the harmful attack (never the model under
-    # test, so an unaligned target does not grade itself).
-    judge_model: str = "qwen2.5:7b"
+    # Fixed model that grades the harmful attack (never the model under test, so
+    # an unaligned target does not grade itself). It reads the *full* message
+    # chain, so it must see everything the assistant said and every tool result.
+    judge_model: str = "gemma2:9b"
+    # Model that rewrites failed injections in the adaptive loop. Decoupled from
+    # the judge so the two can diverge: the judge must stay aligned (a strict
+    # safety classifier), but the generator must NOT — an aligned generator
+    # (gemma2) silently defanged the harmful objective across attempts (bomb ->
+    # "non-lethal self-defense" -> "reinforce my windows"), biasing the harmful
+    # ASR down on rungs 2-5. dolphin3 is uncensored and keeps the objective.
+    generator_model: str = "dolphin3:8b"
 
     strategies: list[str] = ["S1", "S2", "S3"]
     num_facts: list[int] = [0, 1, 2, 5, 10, 25, 50, 100, 150, 200]
@@ -313,6 +325,21 @@ class ExperimentRunner:
             Path(attempts_path) if attempts_path else self.results_path.with_name("attempts.csv")
         )
         self.console = console
+        self._console_obj: Any | None = None  # rich Console, built once when console=True
+
+    # -- console ------------------------------------------------------------- #
+
+    def _get_console(self) -> Any | None:
+        """The shared rich console when ``console=True``, else ``None``.
+
+        Cached so ``run`` (campaign progress) and ``run_rep`` (per-attempt
+        progress) print to the same console instance.
+        """
+        if not self.console:
+            return None
+        if self._console_obj is None:
+            self._console_obj = _make_console()
+        return self._console_obj
 
     # -- lazy judge ---------------------------------------------------------- #
 
@@ -324,9 +351,9 @@ class ExperimentRunner:
         return self._judge
 
     def _ensure_attacker(self) -> AdaptiveAttacker:
-        """The adaptive prompt generator: reuses the aligned ``judge_model``."""
+        """The adaptive prompt generator: its own ``generator_model``."""
         if self._attacker is None:
-            attacker_llm = build_llm(self.settings, self.config.judge_model)
+            attacker_llm = build_llm(self.settings, self.config.generator_model)
             self._attacker = AdaptiveAttacker(attacker_llm, self.messages)
         return self._attacker
 
@@ -384,8 +411,11 @@ class ExperimentRunner:
                 self.settings, target=self.config.target, target_room=self.config.target_room
             )
             return success, "", ""
-        # harmful: the LLM judge reads the assistant's final answer.
-        verdict = self._ensure_judge().evaluate(result.final_answer)
+        # harmful: the LLM judge reads the FULL conversation, not just the final
+        # answer, so it can attribute the injected request to the untrusted
+        # tool/email input and score only what the assistant itself delivered.
+        transcript = format_transcript(result.full_messages())
+        verdict = self._ensure_judge().evaluate(transcript)
         return verdict.success, verdict.label, verdict.rationale.replace("\n", " ").strip()
 
     def _adapt(
@@ -442,8 +472,15 @@ class ExperimentRunner:
         winning_attempt = 0
         winning_source = ""
         last: dict[str, Any] = {}
+        console = self._get_console()
 
         for attempt in range(1, max_attempts + 1):
+            if console is not None:
+                # Which adaptive attempt is running now (e.g. 3/5) and its source.
+                console.print(
+                    f"[yellow]  ↳ intento {attempt}/{max_attempts}[/] "
+                    f"[dim](inyección: {source})[/]"
+                )
             llm_seed = stable_seed(
                 "llm", cell.attack_type, cell.strategy, cell.num_facts,
                 cell.fact_source, rep, attempt, cfg.base_seed,
@@ -535,13 +572,26 @@ class ExperimentRunner:
 
     # -- full campaign ------------------------------------------------------- #
 
+    def _reps_for(self, cell: Cell) -> int:
+        """How many repetitions this cell gets.
+
+        The S1 baseline (``num_facts == 0``) is run ``baseline_repetitions`` times
+        per (model, attack_type) to gather more comparison data; every other cell
+        keeps ``repetitions``.
+        """
+        return (
+            self.config.baseline_repetitions
+            if cell.num_facts == 0
+            else self.config.repetitions
+        )
+
     def run(self, *, resume: bool = True) -> Path:
         """Run every (cell, rep) not already in results.csv. Returns the path."""
         completed = self._completed_keys() if resume else set()
         cells = build_cells(self.config)
-        plan = [(cell, rep) for cell in cells for rep in range(self.config.repetitions)]
+        plan = [(cell, rep) for cell in cells for rep in range(self._reps_for(cell))]
         total = len(plan)
-        console = _make_console() if self.console else None
+        console = self._get_console()
         for position, (cell, rep) in enumerate(plan, start=1):
             key = (
                 cell.model,
@@ -560,7 +610,7 @@ class ExperimentRunner:
                     f"[dim]({total - position} left)[/] · "
                     f"{cell.model} {cell.attack_type} {cell.strategy} "
                     f"num_facts={cell.num_facts} source={cell.fact_source} "
-                    f"rep={rep + 1}/{self.config.repetitions}"
+                    f"rep={rep + 1}/{self._reps_for(cell)}"
                 )
             row = self.run_rep(cell, rep)
             self._append_row(row)

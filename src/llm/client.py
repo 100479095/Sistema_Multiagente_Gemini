@@ -45,10 +45,20 @@ class AssistantMessage:
 
     content: str | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
+    #: Why generation stopped: ``stop`` (the model finished), ``length`` (it hit
+    #: ``max_tokens``), ``tool_calls``, ... Instrumentation only — it never goes
+    #: back on the wire. Without it a reply cut at the cap is indistinguishable
+    #: from a complete one in the stored text.
+    finish_reason: str | None = None
 
     @property
     def has_tool_calls(self) -> bool:
         return bool(self.tool_calls)
+
+    @property
+    def truncated(self) -> bool:
+        """True when generation stopped because it ran out of token budget."""
+        return self.finish_reason == "length"
 
     def to_openai(self) -> dict[str, Any]:
         """Serialize as an OpenAI ``assistant`` message for the next inference."""
@@ -104,6 +114,12 @@ def extract_text_tool_calls(content: str) -> tuple[list[ToolCall], str]:
     opening tag) leaves them in the message content. This fallback scans the
     content for JSON objects carrying a ``name`` key and turns them into
     :class:`ToolCall` objects, returning the cleaned-up residual text.
+
+    ``<tool_response>`` is stripped alongside ``<tool_call>``: a model that never
+    learnt ChatML (dolphin3-tools) wraps its *call* in the *result* tag it sees
+    in the rendered context. Leaving those tags in the residual text put them
+    into the assistant's own history, where the model read them as a pattern to
+    imitate and answered with an empty ``<tool_response>`` block.
     """
     calls: list[ToolCall] = []
     cleaned = content
@@ -121,8 +137,9 @@ def extract_text_tool_calls(content: str) -> tuple[list[ToolCall], str]:
             args = {}
         calls.append(ToolCall(id=f"text_call_{idx}", name=obj["name"], arguments=args))
         cleaned = cleaned.replace(obj_str, "", 1)
-    cleaned = cleaned.replace("<tool_call>", "").replace("</tool_call>", "").strip()
-    return calls, cleaned
+    for tag in ("<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>"):
+        cleaned = cleaned.replace(tag, "")
+    return calls, cleaned.strip()
 
 
 class LLMClient:
@@ -145,6 +162,11 @@ class LLMClient:
                 base_url=self.settings.base_url,
                 api_key=self.settings.api_key,
                 timeout=self.settings.timeout_s,
+                # The SDK retries timeouts by default (2 extra attempts), so a
+                # slow inference cost 3 x timeout_s before raising. Here a
+                # timeout means the model is generating slower than the budget
+                # allows — a retry runs into the very same wall.
+                max_retries=self.settings.max_retries,
             )
         return self._client
 
@@ -155,13 +177,14 @@ class LLMClient:
         *,
         temperature: float | None = None,
         seed: int | None = None,
+        max_tokens: int | None = None,
     ) -> AssistantMessage:
         """Run one inference and return the parsed assistant message.
 
         ``messages`` follow the OpenAI chat format. ``tools`` is the OpenAI tool
         schema list (or ``None`` to disable tool-calling for this call). Per-call
-        ``temperature``/``seed`` override the configured defaults (used by the
-        experiment runner to vary the seed per repetition).
+        ``temperature``/``seed``/``max_tokens`` override the configured defaults
+        (the experiment runner varies the seed per repetition).
         """
         client = self._ensure_client()
 
@@ -176,6 +199,11 @@ class LLMClient:
         effective_seed = seed if seed is not None else self.settings.seed
         if effective_seed is not None:
             kwargs["seed"] = effective_seed
+        effective_max_tokens = (
+            max_tokens if max_tokens is not None else self.settings.max_tokens
+        )
+        if effective_max_tokens is not None:
+            kwargs["max_tokens"] = effective_max_tokens
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -186,7 +214,9 @@ class LLMClient:
     @staticmethod
     def _parse_response(response: Any) -> AssistantMessage:
         """Convert an OpenAI-style response object into an AssistantMessage."""
-        message = response.choices[0].message
+        choice = response.choices[0]
+        message = choice.message
+        finish_reason = getattr(choice, "finish_reason", None)
         tool_calls: list[ToolCall] = []
         for tc in getattr(message, "tool_calls", None) or []:
             tool_calls.append(
@@ -207,4 +237,6 @@ class LLMClient:
                 tool_calls = recovered
                 content = cleaned or None
 
-        return AssistantMessage(content=content, tool_calls=tool_calls)
+        return AssistantMessage(
+            content=content, tool_calls=tool_calls, finish_reason=finish_reason
+        )

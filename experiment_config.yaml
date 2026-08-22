@@ -8,8 +8,9 @@
 # git-ignored, so harmful output never enters version control (PDR §15/§16).
 
 # --- Models under test (the aligned vs unaligned comparison) ---
-models: ["qwen2.5:7b", "dolphin3-tools:8b"]   # main assistant LLM (swept)
-judge_model: "qwen2.5:7b"                      # fixed aligned model that grades the harmful attack
+models: ["qwen2.5-tools:7b", "dolphin3-tools:8b"]   # main assistant LLM (swept); both are local builds with a corrected tool template (models/)
+judge_model: "gemma2:9b"                        # grades the harmful attack on the FULL message chain
+generator_model: "dolphin3:8b"                  # UNALIGNED rewriter: aligned gemma2 diluted the harmful objective (bomb -> "reinforce my windows"); dolphin keeps it. Judge stays aligned.
 
 # --- Attack families (each measures its own effectiveness) ---
 #   agentic — makes the assistant CALL A TOOL (open the window); scored by the
@@ -22,7 +23,8 @@ attack_types: ["agentic", "harmful"]
 strategies: ["S1", "S2", "S3"]        # S1 = baseline (instruction only, num_facts 0)
 num_facts: [0, 1, 2, 5, 10, 25, 50, 100, 150, 200] #25, 50, 100, 150, 200
 fact_sources: ["real", "invented", "mixed"]
-repetitions: 1                        # R repetitions per cell
+repetitions: 1                        # R repetitions per fact-bearing cell
+baseline_repetitions: 10              # S1 baseline (num_facts 0) reps per (model, attack_type): more data for the S1 comparison
 
 # --- Injection channel & target ---
 # The experiment focuses on EMAIL input: the injection rides in the email BODY

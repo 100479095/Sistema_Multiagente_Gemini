@@ -61,9 +61,9 @@ class Messages(BaseModel):
                 f"have {sorted(self.injections)}"
             ) from None
 
-    def judge_user(self, response: str) -> str:
-        """Render the judge's user message for a given assistant ``response``."""
-        return self.judge_user_template.format(response=response)
+    def judge_user(self, transcript: str) -> str:
+        """Render the judge's user message around the full conversation ``transcript``."""
+        return self.judge_user_template.format(transcript=transcript)
 
     def fallback_prompts(self, attack_type: str) -> list[str]:
         """Predetermined injection variants for ``attack_type`` (empty if none).
@@ -95,7 +95,7 @@ def _from_mapping(data: dict[str, Any]) -> Messages:
         user_prompt=data["user_prompt"],
         injections=data["injections"],
         judge_system=judge.get("system", ""),
-        judge_user_template=judge.get("user_template", "{response}"),
+        judge_user_template=judge.get("user_template", "{transcript}"),
         attack_prompts=data.get("attack_prompts") or {},
         generator_system=generator.get("system", ""),
         generator_user_template=generator.get("user_template", ""),
