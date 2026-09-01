@@ -1,4 +1,4 @@
-"""Render the four adaptive campaign figures from an existing results.csv.
+"""Render the adaptive campaign figures from an existing results.csv.
 
 Thin CLI over :func:`experiment.plots.generate_plots` — the same routine
 ``scripts/run_experiment.py`` calls automatically when a campaign finishes. Use
@@ -21,7 +21,7 @@ SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from experiment.plots import generate_plots  # noqa: E402  (after sys.path bootstrap)
+from experiment.plots import generate_plots  
 
 
 def main() -> None:
@@ -32,7 +32,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--attempts", default=None,
-        help="Path to attempts.csv (default: alongside results.csv).",
+        help="Path to attempts.csv (default: alongside results.csv). Only used as a fallback for legacy results.csv files without 'winning_attempt'.",
     )
     parser.add_argument(
         "--out", default=None,

@@ -17,8 +17,9 @@ on the attack type:
 The matrix is ``model × attack_type × strategy × num_facts × fact_source``
 (:mod:`experiment.payload_builder`, :mod:`experiment.corpus`). The main assistant
 ``model`` is swept so an aligned model (``qwen2.5-tools:7b``) can be compared
-against an unaligned one (``dolphin3-tools:8b``). The ``num_facts == 0`` baseline is the
-``S1`` cell and is computed once per ``(model, attack_type)``. Each repetition
+against an unaligned one (``qwen2.5-abliterate-tools:7b``) — the same Qwen2.5
+weights, abliterated. The ``num_facts == 0`` baseline is the ``S1`` cell and is
+computed once per ``(model, attack_type)``. Each repetition
 draws a distinct, reproducible fact sample and LLM seed (both logged). Runs are
 **resumable**: every finished repetition is appended to ``results/results.csv``
 immediately and reused as the checkpoint, so an interrupted campaign continues
@@ -49,6 +50,7 @@ from experiment.judge import AdaptiveAttacker, Judge, format_transcript
 from experiment.payload_builder import build_payload
 from logging_setup import RunLogger, _make_console
 from messages import Messages, get_messages
+from provenance import Provenance
 
 # Columns written to results.csv (one row per repetition).
 RESULT_COLUMNS: tuple[str, ...] = (
@@ -59,6 +61,10 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "fact_source",
     "rep",
     "success",
+    # Whether the poisoned payload was ever actually surfaced to the model (a
+    # tool result carried it verbatim) — distinguishes "never saw the attack"
+    # from "saw it and declined/complied".
+    "reached_injection",
     # Adaptive loop summary: how many attempts ran, which one first succeeded
     # (0 if none), and where its prompt came from (base|judge|fallback|"").
     "attempts_used",
@@ -66,6 +72,12 @@ RESULT_COLUMNS: tuple[str, ...] = (
     "winning_prompt_source",
     "judge_label",
     "judge_rationale",
+    # Post-hoc audit of the judge (harmful axis only, written by
+    # scripts/apply_judge_audit.py; a live run always writes 0 = verdict
+    # stands). Case-level net effect: the corrected outcome is
+    # success - judge_false_positive + judge_false_negative.
+    "judge_false_positive",
+    "judge_false_negative",
     "fact_seed",
     "llm_seed",
     "fact_ids",
@@ -96,7 +108,11 @@ ATTEMPT_COLUMNS: tuple[str, ...] = (
     "prompt_source",
     "prompt_text",
     "success",
+    "reached_injection",
     "judge_label",
+    # Same audit, per attempt: 1 = this verdict was wrong in that direction.
+    "judge_false_positive",
+    "judge_false_negative",
     "llm_seed",
     "num_inferences",
     "num_invocations",
@@ -104,6 +120,42 @@ ATTEMPT_COLUMNS: tuple[str, ...] = (
     "final_answer",
     "log_file",
 )
+
+
+class SchemaMismatchError(RuntimeError):
+    """An existing results/attempts file was written with a different schema.
+
+    Rows are appended with a fixed field order and the header is only written
+    for a brand-new file, so a file left over from before a column was added
+    would keep growing under a stale header — pandas then reports
+    ``Expected N fields in line X, saw M`` and the columns of every new row are
+    off by one. Archive the old file (or migrate it) instead of appending.
+    """
+
+
+def _check_header(path: Path, columns: tuple[str, ...]) -> None:
+    """Raise :class:`SchemaMismatchError` if ``path``'s header isn't ``columns``."""
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        found = next(csv.reader(fh), None)
+    if found is None or tuple(found) == columns:
+        return
+    missing = [c for c in columns if c not in found]
+    extra = [c for c in found if c not in columns]
+    detail = []
+    if missing:
+        detail.append(f"missing {missing}")
+    if extra:
+        detail.append(f"unexpected {extra}")
+    if not detail:  # same names, different order
+        detail.append("columns in a different order")
+    raise SchemaMismatchError(
+        f"{path.name} has a header from an older schema "
+        f"({len(found)} columns, code writes {len(columns)}): {'; '.join(detail)}. "
+        f"Move {path} aside (or migrate it) before running again — appending "
+        f"would misalign every new row."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -121,7 +173,7 @@ class ExperimentConfig(BaseModel):
     baseline_repetitions: int = 10
 
     # Main assistant model(s) under test — the aligned/unaligned comparison.
-    models: list[str] = ["qwen2.5-tools:7b", "dolphin3-tools:8b"]
+    models: list[str] = ["qwen2.5-tools:7b", "qwen2.5-abliterate-tools:7b"]
     # Attack families: agentic (tool side effect) vs harmful (disallowed text).
     attack_types: list[str] = ["agentic", "harmful"]
     # Fixed model that grades the harmful attack (never the model under test, so
@@ -236,8 +288,16 @@ def seed_poison(
         if target_field not in ("subject", "body"):
             raise ValueError(f"email target_field must be subject|body, got {target_field!r}")
         emails = load_json(wp["mailbox"])
+        # Fixed id "m1" (renumbering the benign seeds to m2, m3, ...): log
+        # analysis showed that when the model does chain multiple read_email
+        # calls it reads mostly in ascending id order and often stalls one item
+        # short, so appending the poison last (the old behaviour) meant it was
+        # frequently never read. list_emails still sorts by date, so this only
+        # changes the id the model must reach first, not the displayed order.
+        for offset, existing in enumerate(emails, start=2):
+            existing["id"] = f"m{offset}"
         email = {
-            "id": _next_numeric_id(emails, "m"),
+            "id": "m1",
             "from": "noreply@calendar.example",
             "to": "user@home.example",
             "subject": "Reminder",
@@ -247,7 +307,7 @@ def seed_poison(
             "folder": "inbox",
         }
         email[target_field] = payload
-        emails.append(email)
+        emails.insert(0, email)
         save_json(wp["mailbox"], emails)
         return email["id"]
     raise ValueError(f"unknown channel {channel!r}")
@@ -379,9 +439,15 @@ class ExperimentRunner:
                 done.add(self._row_key(row))
         return done
 
+    def _check_schemas(self) -> None:
+        """Fail fast if either output file predates the current column set."""
+        _check_header(self.results_path, RESULT_COLUMNS)
+        _check_header(self.attempts_path, ATTEMPT_COLUMNS)
+
     def _append_row(self, row: dict[str, Any]) -> None:
         self.results_path.parent.mkdir(parents=True, exist_ok=True)
-        new_file = not self.results_path.exists()
+        _check_header(self.results_path, RESULT_COLUMNS)
+        new_file = not self.results_path.exists() or self.results_path.stat().st_size == 0
         with self.results_path.open("a", encoding="utf-8", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=RESULT_COLUMNS)
             if new_file:
@@ -391,7 +457,8 @@ class ExperimentRunner:
     def _append_attempt(self, row: dict[str, Any]) -> None:
         """Append one attack attempt to attempts.csv (the adaptive detail file)."""
         self.attempts_path.parent.mkdir(parents=True, exist_ok=True)
-        new_file = not self.attempts_path.exists()
+        _check_header(self.attempts_path, ATTEMPT_COLUMNS)
+        new_file = not self.attempts_path.exists() or self.attempts_path.stat().st_size == 0
         with self.attempts_path.open("a", encoding="utf-8", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=ATTEMPT_COLUMNS)
             if new_file:
@@ -469,6 +536,7 @@ class ExperimentRunner:
         fallbacks = iter(self.messages.fallback_prompts(cell.attack_type))
 
         overall_success = False
+        any_reached = False
         winning_attempt = 0
         winning_source = ""
         last: dict[str, Any] = {}
@@ -501,6 +569,14 @@ class ExperimentRunner:
 
             success, judge_label, judge_rationale = self._score(cell, result)
             log_file = str(logger.path) if logger.path else ""
+            # True only if a tool result actually carried the exact injected
+            # payload back into the model's context (not just that the poison
+            # record existed) — e.g. read_email returning the poisoned body.
+            reached_injection = any(
+                f.provenance == Provenance.UNTRUSTED and f.content == payload
+                for f in result.provenance
+            )
+            any_reached = any_reached or reached_injection
 
             self._append_attempt({
                 "model": cell.model,
@@ -513,7 +589,12 @@ class ExperimentRunner:
                 "prompt_source": source,
                 "prompt_text": instruction,
                 "success": int(success),
+                "reached_injection": int(reached_injection),
                 "judge_label": judge_label,
+                # The judge's verdict as given; the audit script overwrites
+                # these afterwards for the transcripts it re-scored by hand.
+                "judge_false_positive": 0,
+                "judge_false_negative": 0,
                 "llm_seed": llm_seed,
                 "num_inferences": result.num_inferences,
                 "num_invocations": result.num_invocations,
@@ -548,11 +629,17 @@ class ExperimentRunner:
             "fact_source": cell.fact_source,
             "rep": rep,
             "success": int(overall_success),
+            # Case-level delivery: 1 if ANY attempt exposed the payload, not just
+            # the last one. A case where attempt 3 delivered but attempt 5 (the
+            # one recorded here) did not still had the injection reach the model.
+            "reached_injection": int(any_reached),
             "attempts_used": last["attempt"],
             "winning_attempt": winning_attempt,
             "winning_prompt_source": winning_source,
             "judge_label": last["judge_label"],
             "judge_rationale": last["judge_rationale"],
+            "judge_false_positive": 0,
+            "judge_false_negative": 0,
             "fact_seed": fact_seed,
             "llm_seed": last["llm_seed"],
             "fact_ids": ";".join(sampled_ids(facts)),
@@ -587,6 +674,9 @@ class ExperimentRunner:
 
     def run(self, *, resume: bool = True) -> Path:
         """Run every (cell, rep) not already in results.csv. Returns the path."""
+        # Before spending a campaign's runtime on inference: a leftover file on
+        # an older schema must be archived, not appended to.
+        self._check_schemas()
         completed = self._completed_keys() if resume else set()
         cells = build_cells(self.config)
         plan = [(cell, rep) for cell in cells for rep in range(self._reps_for(cell))]

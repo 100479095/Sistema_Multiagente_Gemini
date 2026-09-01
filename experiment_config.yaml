@@ -8,7 +8,7 @@
 # git-ignored, so harmful output never enters version control (PDR §15/§16).
 
 # --- Models under test (the aligned vs unaligned comparison) ---
-models: ["qwen2.5-tools:7b", "dolphin3-tools:8b"]   # main assistant LLM (swept); both are local builds with a corrected tool template (models/)
+models: ["qwen2.5-tools:7b", "qwen2.5-abliterate-tools:7b"]   # main assistant LLM (swept); both are local builds with a corrected tool template (models/)
 judge_model: "gemma2:9b"                        # grades the harmful attack on the FULL message chain
 generator_model: "dolphin3:8b"                  # UNALIGNED rewriter: aligned gemma2 diluted the harmful objective (bomb -> "reinforce my windows"); dolphin keeps it. Judge stays aligned.
 

@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     # experiment_config.yaml's own ``models`` is only a fallback (see
     # ExperimentConfig.load). Overridable via TESTBED_MODELS or config.yaml.
     models: list[str] = Field(
-        default_factory=lambda: ["qwen2.5-tools:7b", "dolphin3-tools:8b"]
+        default_factory=lambda: ["qwen2.5-tools:7b", "qwen2.5-abliterate-tools:7b"]
     )
 
     @classmethod

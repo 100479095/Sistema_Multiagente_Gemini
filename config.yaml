@@ -5,7 +5,7 @@
 # Assistant model(s) the experiment pipeline sweeps (aligned vs unaligned).
 # This is the single source of truth for the campaign; experiment_config.yaml's
 # own `models` is only a fallback. Override with TESTBED_MODELS if needed.
-models: ["qwen2.5-tools:7b", "dolphin3-tools:8b"]
+models: ["qwen2.5-tools:7b", "qwen2.5-abliterate-tools:7b"]
 
 llm:
   # Ollama exposes an OpenAI-compatible endpoint at /v1.

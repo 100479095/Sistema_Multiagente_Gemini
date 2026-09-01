@@ -1,6 +1,7 @@
-# qwen2.5-tools:7b
+# qwen2.5-abliterate-tools:7b
 
-FROM qwen2.5:7b
+
+FROM huihui_ai/qwen2.5-abliterate:7b-instruct
 TEMPLATE """{{- if .Messages }}
 {{- if or .System .Tools }}<|im_start|>system
 {{- if .System }}

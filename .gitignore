@@ -9,7 +9,6 @@ env/
 
 # Run artifacts (local only, per PDR §9.5 / RNF)
 logs/
-results/
 
 # Editors / OS
 .vscode/
